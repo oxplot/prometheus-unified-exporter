@@ -1,0 +1,7 @@
+targets:
+  - url: http://127.0.0.1:8080/A
+    labels:
+      service: A
+  - url: http://127.0.0.1:8080/B
+    labels:
+      service: B
