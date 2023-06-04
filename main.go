@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 
 	dto "github.com/prometheus/client_model/go"
@@ -89,8 +90,15 @@ func addLabels(metrics map[string]*dto.MetricFamily, labels map[string]string) {
 }
 
 func serializeMetrics(w io.Writer, metricFamilies map[string]*dto.MetricFamily) error {
-	encoder := expfmt.NewEncoder(w, expfmt.FmtText)
+	lst := make([]*dto.MetricFamily, 0, len(metricFamilies))
 	for _, mf := range metricFamilies {
+		lst = append(lst, mf)
+	}
+	sort.Slice(lst, func(i, j int) bool {
+		return *lst[i].Name < *lst[j].Name
+	})
+	encoder := expfmt.NewEncoder(w, expfmt.FmtText)
+	for _, mf := range lst {
 		err := encoder.Encode(mf)
 		if err != nil {
 			return err
