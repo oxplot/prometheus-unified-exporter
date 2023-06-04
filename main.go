@@ -59,7 +59,7 @@ func loadConfig(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-func fetchMetrics(url string) ([]*dto.MetricFamily, error) {
+func fetchMetrics(url string) (map[string]*dto.MetricFamily, error) {
 	resp, err := http.Get(url)
 	if err != nil {
 		return nil, err
@@ -72,20 +72,10 @@ func fetchMetrics(url string) ([]*dto.MetricFamily, error) {
 	}
 
 	var parser expfmt.TextParser
-	metrics, err := parser.TextToMetricFamilies(strings.NewReader(string(body)))
-	if err != nil {
-		return nil, err
-	}
-
-	metricFamilies := make([]*dto.MetricFamily, 0, len(metrics))
-	for _, mf := range metrics {
-		metricFamilies = append(metricFamilies, mf)
-	}
-
-	return metricFamilies, nil
+	return parser.TextToMetricFamilies(strings.NewReader(string(body)))
 }
 
-func addLabels(metrics []*dto.MetricFamily, labels map[string]string) {
+func addLabels(metrics map[string]*dto.MetricFamily, labels map[string]string) {
 	for _, mf := range metrics {
 		for _, m := range mf.Metric {
 			for labelName, labelValue := range labels {
@@ -98,9 +88,9 @@ func addLabels(metrics []*dto.MetricFamily, labels map[string]string) {
 	}
 }
 
-func serializeMetrics(w io.Writer, metrics []*dto.MetricFamily) error {
+func serializeMetrics(w io.Writer, metricFamilies map[string]*dto.MetricFamily) error {
 	encoder := expfmt.NewEncoder(w, expfmt.FmtText)
-	for _, mf := range metrics {
+	for _, mf := range metricFamilies {
 		err := encoder.Encode(mf)
 		if err != nil {
 			return err
@@ -113,25 +103,30 @@ func serializeMetrics(w io.Writer, metrics []*dto.MetricFamily) error {
 // targets and writing them to the response.
 func handleMetrics(w http.ResponseWriter, r *http.Request) {
 	// Fan out requests to all targets.
-	ch := make(chan []*dto.MetricFamily, len(cfg.Targets))
+	ch := make(chan map[string]*dto.MetricFamily, len(cfg.Targets))
 	for _, t := range cfg.Targets {
 		go func(t Target) {
-			metrics, err := fetchMetrics(t.URL)
+			metricFamilies, err := fetchMetrics(t.URL)
 			defer func() {
-				ch <- metrics
+				ch <- metricFamilies
 			}()
 			if err != nil {
 				log.Printf("failed to fetch metrics from %s: %v", t.URL, err)
-				return
 			}
-			addLabels(metrics, t.Labels)
+			addLabels(metricFamilies, t.Labels)
 		}(t)
 	}
-	allMetrics := make([]*dto.MetricFamily, 0)
+	allMetricsFamilies := map[string]*dto.MetricFamily{}
 	for range cfg.Targets {
-		allMetrics = append(allMetrics, <-ch...)
+		for n, mf := range <-ch {
+			if amf, ok := allMetricsFamilies[n]; ok {
+				amf.Metric = append(amf.Metric, mf.Metric...)
+			} else {
+				allMetricsFamilies[*mf.Name] = mf
+			}
+		}
 	}
-	if err := serializeMetrics(w, allMetrics); err != nil {
+	if err := serializeMetrics(w, allMetricsFamilies); err != nil {
 		log.Printf("failed to serialize metrics: %v", err)
 	}
 }
